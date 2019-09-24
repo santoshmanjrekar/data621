@@ -1,0 +1,150 @@
+---
+title: "Hw1-Moneyball"
+author: "Santosh Manjrekar"
+date: "September 23, 2019"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Explore, analyze and model a data set containing approximately 2200 records. Each record represents a professional baseball team from the years 1871 to 2006 inclusive. Each record has the performance of the team for the given year, with all of the statistics adjusted to match the performance ofa 162 game season.
+
+Your objective is to build a multiple linear regression model on the training data to predict the number of wins for the team.
+
+
+
+## Data Exploration
+
+Dataset is examined to understand the data structure, whether the data has missing values, outliers, whether the data are skewed, etc. Findings during the data exploration process can dictate the appropriate model to fit the data.
+
+
+```{r}
+library(dplyr)
+train <- read.csv("moneyball-training-data.csv")
+
+#remove the leading text "TEAM_" on the variable names to make our plots look less cluttered
+colnames(train) = gsub("TEAM_", "", colnames(train))
+
+#Remove index column
+train <- train[,-1]
+```
+
+### Explore the data
+
+Summary and discriptive statistics Descriptive statistics is used here to summarize the data to gather insights into the information contained in the dataset.
+The descriptive statistics below shows the the mean, mode, standard deviation, minimum and maximum of each variable in the dataset.
+
+
+
+```{r}
+summary(train)
+```
+### Skewness and outliers
+Examining skewness and outliers in the data is important prior to choosing the model. This is important because some models will require transformation of the data.
+
+As seen below in the density matrix and boxplots, several variables are skewed. Four of the sixteen variables are normally or close to mormally distributed.
+
+```{r}
+library(reshape)
+library(ggplot2)
+
+par(mfrow = c(3, 3))
+
+datasub = melt(train)
+ggplot(datasub, aes(x= value)) + 
+    geom_density(fill='red') + facet_wrap(~variable, scales = 'free') 
+```
+### Missing values
+The MICE library in r was used to provide analyze the missing values of the dataset. The analysis shows that 191 observations are complete, 1295 miss only TEAM_BATTING_HPB, 349 miss only TEAM_BATTING_HPB. The TEAM_BATTING_HPB has the most missing values accoss the values.
+
+The VIM library was used to visualize missing values. The visualization shows that less than one percent of the data does not have any missing values.
+
+```{r}
+library(mice)
+md.pattern(train)
+```
+```{r}
+#Visualize missing values
+library(VIM)
+aggr_plot <- aggr(train, 
+                  col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(train), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
+```
+### Handling missing values
+Data was filtered to remove missing records and 0 sent to NA
+```{r}
+library(dplyr)
+train <- train %>% filter(TARGET_WINS >=22 & TARGET_WINS <= 124 & BATTING_H <= 1876 & BATTING_2B >= 116 & BATTING_2B <= 376 & BATTING_BB >= 292 &
+           BATTING_BB <= 879 & BATTING_SO >= 326 & BATTING_SO <= 1535 & PITCHING_HR <= 258 & PITCHING_SO <= 1450)
+train[train == 0] <- NA
+```
+Examine new dataset
+```{r}
+par(mfrow = c(3, 3))
+
+datasub = melt(train)
+ggplot(datasub, aes(x= value)) + 
+    geom_density(fill='red') + facet_wrap(~variable, scales = 'free') 
+
+```
+### Correlation amoung predictors
+The visualzations below shows there are positive or negative correlations among values. There are a small number of values that are not correlated.
+```{r}
+library(psych)
+pairs.panels(train[1:8])  # select columns 1-8
+```
+
+
+
+### Data transformation
+Centering and scaling was used to transform individual predictors in the dataset using the caret library. The density diagrams of the transformed data shows that some variables were transformed from skewedness to normality or close to normality.`
+
+```{r}
+library(caret)
+trans = preProcess(train, 
+                   c("BoxCox", "center", "scale"))
+predictorsTrans = data.frame(
+      trans = predict(trans, train))
+```
+```{r}
+library(reshape)
+#Density plot of tranformed data
+dataTrans = melt(predictorsTrans)
+ggplot(dataTrans, aes(x= value)) + 
+    geom_density(fill='red') + facet_wrap(~variable, scales = 'free') 
+
+```
+```{r}
+summary(predictorsTrans)
+```
+### Build Model
+The models are built with one dependent variable and measure the associations amoung all the predictor variables.
+
+```{r}
+#All variables
+summary(mod1 <- lm(predictorsTrans$trans.TARGET_WINS ~ ., data = predictorsTrans))
+```
+### Evaluate the model
+Risidual plots
+```{r}
+res <- residuals(mod1)
+plot(mod1)
+```
+### Variable Importance
+Assess the relative importance of individual predictors in the model, we can also look at the absolute value of the t-statistic for each model parameter.
+```{r}
+varImp(mod1)
+```
+### Wald Test
+The Wald test is used to evaluate the statistical significance of each coefficient in the model and is calculated by taking the ratio of the square of the regression coefficient to the square of the standard error of the coefficient.
+
+```{r}
+library(survey)
+regTermTest(mod1, "trans.BATTING_2B")
+```
+
