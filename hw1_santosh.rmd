@@ -11,6 +11,28 @@ output:
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r, include = FALSE}
+
+library(Hmisc)
+library(xlsx) 
+library(xtable)
+library(knitr)
+library(scales)
+library(magrittr)
+library(tidyr)
+library(plyr)
+library(dplyr) 
+library(stringr)
+library(e1071)
+library(corrplot)
+library(knitcitations)
+library(bibtex)
+library(missForest)
+library(foreach)
+library(stargazer)
+library(forecast)
+```
+
 ## Introduction
 
 Explore, analyze and model a data set containing approximately 2200 records. Each record represents a professional baseball team from the years 1871 to 2006 inclusive. Each record has the performance of the team for the given year, with all of the statistics adjusted to match the performance ofa 162 game season.
@@ -21,130 +43,253 @@ Your objective is to build a multiple linear regression model on the training da
 
 ## Data Exploration
 
-Dataset is examined to understand the data structure, whether the data has missing values, outliers, whether the data are skewed, etc. Findings during the data exploration process can dictate the appropriate model to fit the data.
+Note that each record has the performance of the team for the given year, with all of the statistics adjusted to match the performance of a 162 game season. The following Table 1 - Descriptive Statistics provides the detailed descriptive statistics regarding our variable of interest - Number of Wins and our possible explanatory variables. 
 
+We noted that several variables were missing a nontrivial amount of observations and these variables are Strikeouts by batters, Stolen Bases, Caught stealing, Batters hit by pitch (get a free base), Strikeouts by pitcher, and Double plays. So we will need to address the missing values for further analysis. 
 
 ```{r}
-library(dplyr)
-train <- read.csv("moneyball-training-data.csv")
+data_dictionary <- read.xlsx("Data Dictionary.xlsx", sheetIndex = 1)
+#file.remove(dir(getwd(), pattern = "Data Dictionary", full.names = TRUE))
+```
 
-#remove the leading text "TEAM_" on the variable names to make our plots look less cluttered
-colnames(train) = gsub("TEAM_", "", colnames(train))
 
-#Remove index column
-train <- train[,-1]
+
+```{r, echo=FALSE, results='asis', cache=TRUE}
+df <- read.csv("moneyball-training-data.csv")
+
+colnames(df) <- mapvalues(as.vector(colnames(df)), 
+                            from = str_trim(data_dictionary$VARIABLE.NAME..), to = as.vector(str_trim(data_dictionary$DEFINITION)))
+
+digits <- c(1) 
+
+descriptive <- describe(df %>% select(-`Identification Variable (do not use)`), 
+                        descript = "Table 1 : Descriptive Statistics", digits = digits) 
+
+for (i in seq(1:length(descriptive))){ 
+                     for (j in c(6,9,12)){names(descriptive[[i]]$counts)[j] <- paste0(names(descriptive[[i]]$counts)[j]," freq")
+                                         }
+     descriptive[[i]]$counts <- (descriptive[[i]]$counts[-c(4,7,8:10,11)])
+     
+     descriptive[[i]]$counts[7] <- round(sapply(df[i + 1], function(x) median(x, na.rm = TRUE)), digits = digits)
+     names(descriptive[[i]]$counts)[7] <- "Median"
+     
+     descriptive[[i]]$counts[8] <- round(sapply(df[i + 1], function(x) sd(x, na.rm = TRUE)), digits = digits)
+     names(descriptive[[i]]$counts)[8] <- "SD"
+     
+     descriptive[[i]]$counts[9] <- round(sapply(df[i + 1], function(x) skewness(x, na.rm = TRUE)), digits = digits)
+     names(descriptive[[i]]$counts)[9] <- "Skew"
+     
+     descriptive[[i]]$counts <- (descriptive[[i]]$counts[c(1:4,7:9,5:6)]) #reorder 
+}
+
 ```
 
 ### Explore the data
 
 Summary and discriptive statistics Descriptive statistics is used here to summarize the data to gather insights into the information contained in the dataset.
-The descriptive statistics below shows the the mean, mode, standard deviation, minimum and maximum of each variable in the dataset.
+The descriptive statistics below shows the the mean, mode, standard deviation, skew,lowest and highest values of each variable in the dataset.
 
 
 
 ```{r}
-summary(train)
+#summary(df)
+descriptive
 ```
-### Skewness and outliers
-Examining skewness and outliers in the data is important prior to choosing the model. This is important because some models will require transformation of the data.
 
-As seen below in the density matrix and boxplots, several variables are skewed. Four of the sixteen variables are normally or close to mormally distributed.
+
+## Imputing Missing Values  
+
+In order to address the missing values in our variables we used a nonparametric imputation method (Random Forest) to impute missing values. Several variables have a significant amount of skew, which include the number of base hits by batters and the number of walks allowed. Correspondingly, these two variables had a skew of 1.57 and 6.74 respectively. Therefore, we chose a nonparametric method due to several variables having significant skew and having a non-normal distribution. 
+
+```{r, results='asis', echo = FALSE, include=TRUE, cache=TRUE, eval=FALSE}
+
+set.seed(1234)
+
+imputed_data <- df %>% 
+              select(-`Identification Variable (do not use)`) %>%
+              missForest(maxiter = 10, ntree = 100, parallelize = 'no')
+
+write.csv(imputed_data$ximp,"imputed-moneyball-training-data.csv", row.names = FALSE)
+```
+```{r, include=FALSE, cache=TRUE}
+## to ensure similar results we load the imputed data from github 
+imputed_data <- read.csv("imputed-moneyball-training-data.csv", header = TRUE, check.names = FALSE)
+```
+
+
+
+## Correlation Matrix 
+
+After competing the imputation, we can implement a correlation matrix to better understand the correlation between variables in the data set. The below matrix is the results and as expected, Number of Wins appears to be most correlated to Base Hits by batters (1B,2B,3B,HR). 
+
+```{r, fig.cap= "Correlation Plot of Training Data Set with imputed values", echo = FALSE, cache=TRUE}
+imputed_df_m <- as.matrix(imputed_data)
+cor_matrix <- cor(imputed_df_m, use = "everything",  method = c("pearson"))
+corrplot(cor_matrix, order = "hclust", addrect = 2, method="square", tl.col = "black", tl.cex = .5, na.label = " ")
+```
+
+# Data Preparation  
+
+First, we chose to eliminate two variables that had a significant number of missing data points. These variables were Batters hit by pitch (get a free base) and Caught stealing, which were missing `r percent(2085/2276)` and `r percent(772/2276)` respectively. 
+
+```{r, include = FALSE, cache=TRUE}
+imputed_df <- imputed_data %>% select(-`Batters hit by pitch (get a free base)`, -`Caught stealing`)
+```
+
+Additionally, we reduced the data set to the following variables for modeling simplicity. Base Hits by batters (1B,2B,3B,HR), Strikeouts by batters, Walks by batters, Double plays, Walks allowed, Triples by batters (3B), and Hits allowed. 
+
+Missing values in the remaining columns had been imputed using the random forest method as previous discussed.
+
+
+
+## Box Cox Transformation
+
+```{r, echo=FALSE, cache=TRUE }
+l1 <- BoxCox.lambda(imputed_df$`Number of wins`)
+#l1
+```
+
+We choose the Box Cox transformation for the following variables to improve linearity in our model. The lambda for the Box Cox transformation of our response variable is `r round(l1,4)` which indicates that we should square the response variable to improve linearity. Also, we discovered that it was not necessary to transform Base Hits by Batters because the significance levels of the variable before and after transformation were the same. 
+
+# Models Built
+
+All models included Base Hits by batters (1B,2B,3B,HR) which is the most correlated variable to Number of Wins as indicated in the correlation matrix. This is expected as Base Hits are necessary to win any game.
+
+## Model 1 
+ 
+We added Walks by batters because a batter being walked would put a runner on a base and therefore in a better position to score. Additionally, Strikeouts by batters would be negatively correlated to the Number of Wins because if a batter strikes out they are not able to provide runs which are critical to winning. 
 
 ```{r}
-library(reshape)
-library(ggplot2)
+lmfit1 <- lm(data = imputed_df, 
+           sqrt(`Number of wins`) ~ `Base Hits by batters (1B,2B,3B,HR)` +  
+                                    `Walks by batters` + 
+                                    `Strikeouts by batters`)
 
-par(mfrow = c(3, 3))
-
-datasub = melt(train)
-ggplot(datasub, aes(x= value)) + 
-    geom_density(fill='red') + facet_wrap(~variable, scales = 'free') 
+summary(lmfit1)
 ```
-### Missing values
-The MICE library in r was used to provide analyze the missing values of the dataset. The analysis shows that 191 observations are complete, 1295 miss only TEAM_BATTING_HPB, 349 miss only TEAM_BATTING_HPB. The TEAM_BATTING_HPB has the most missing values accoss the values.
 
-The VIM library was used to visualize missing values. The visualization shows that less than one percent of the data does not have any missing values.
+The F-statistic is 201.6, and the p-value indicates that this model is significant. Additionally, we see the adjusted R-squared is .2092 but unexpectedly Strikeouts by batters has a positive coefficient and all three predictors are significant.  
+
+The below plot of our fitted values against our residuals indicate that there is Heteroskadistity and showing uneven variation. 
+
+```{r, echo=FALSE}
+plot(lmfit1$fitted.values, lmfit1$residuals)
+#plot(lmfit1)
+```
+
+## Model 2 
+
+We added Walks allowed and Double Plays. The reason being that Walks allowed is possibly an indicator of poor pitching and Double Plays is an indicator of a competent infield team that prevents other teams from scoring. 
 
 ```{r}
-library(mice)
-md.pattern(train)
-```
-```{r}
-#Visualize missing values
-library(VIM)
-aggr_plot <- aggr(train, 
-                  col=c('navyblue','red'), numbers=TRUE, sortVars=TRUE, labels=names(train), cex.axis=.7, gap=3, ylab=c("Histogram of missing data","Pattern"))
-```
-### Handling missing values
-Data was filtered to remove missing records and 0 sent to NA
-```{r}
-library(dplyr)
-train <- train %>% filter(TARGET_WINS >=22 & TARGET_WINS <= 124 & BATTING_H <= 1876 & BATTING_2B >= 116 & BATTING_2B <= 376 & BATTING_BB >= 292 &
-           BATTING_BB <= 879 & BATTING_SO >= 326 & BATTING_SO <= 1535 & PITCHING_HR <= 258 & PITCHING_SO <= 1450)
-train[train == 0] <- NA
-```
-Examine new dataset
-```{r}
-par(mfrow = c(3, 3))
-
-datasub = melt(train)
-ggplot(datasub, aes(x= value)) + 
-    geom_density(fill='red') + facet_wrap(~variable, scales = 'free') 
-
-```
-### Correlation amoung predictors
-The visualzations below shows there are positive or negative correlations among values. There are a small number of values that are not correlated.
-```{r}
-library(psych)
-pairs.panels(train[1:8])  # select columns 1-8
+lmfit2 <- lm(data = imputed_df, 
+           sqrt(`Number of wins`) ~ `Base Hits by batters (1B,2B,3B,HR)` +  
+                                    `Walks allowed` + 
+                                    `Double Plays`)
+summary(lmfit2)
 ```
 
+The F-statistic is 141.2, and the p-value indicates that this model is significant. We see the adjusted R-squared is 0.1561, however, it was unexpected that double plays has a negative coeffiecient but it was not a significant predictor. 
 
+The below plot of our fitted values against our residuals indicate that there is Heteroskadistity and showing uneven variation. 
 
-### Data transformation
-Centering and scaling was used to transform individual predictors in the dataset using the caret library. The density diagrams of the transformed data shows that some variables were transformed from skewedness to normality or close to normality.`
-
-```{r}
-library(caret)
-trans = preProcess(train, 
-                   c("BoxCox", "center", "scale"))
-predictorsTrans = data.frame(
-      trans = predict(trans, train))
-```
-```{r}
-library(reshape)
-#Density plot of tranformed data
-dataTrans = melt(predictorsTrans)
-ggplot(dataTrans, aes(x= value)) + 
-    geom_density(fill='red') + facet_wrap(~variable, scales = 'free') 
-
-```
-```{r}
-summary(predictorsTrans)
-```
-### Build Model
-The models are built with one dependent variable and measure the associations amoung all the predictor variables.
-
-```{r}
-#All variables
-summary(mod1 <- lm(predictorsTrans$trans.TARGET_WINS ~ ., data = predictorsTrans))
-```
-### Evaluate the model
-Risidual plots
-```{r}
-res <- residuals(mod1)
-plot(mod1)
-```
-### Variable Importance
-Assess the relative importance of individual predictors in the model, we can also look at the absolute value of the t-statistic for each model parameter.
-```{r}
-varImp(mod1)
-```
-### Wald Test
-The Wald test is used to evaluate the statistical significance of each coefficient in the model and is calculated by taking the ratio of the square of the regression coefficient to the square of the standard error of the coefficient.
-
-```{r}
-library(survey)
-regTermTest(mod1, "trans.BATTING_2B")
+```{r, echo=FALSE}
+plot(lmfit2$fitted.values, lmfit2$residuals)
 ```
 
+## Model 3 
+
+We included Triples by batters and Hits allowed. Additonally, as expected, the Hits allowed has a negative relationship to wins because hits allowed indicates the other team getting a hit and possibly scoring a point. 
+
+```{r}
+lmfit3 <- lm(data = imputed_df,
+            `Number of wins` ~ `Base Hits by batters (1B,2B,3B,HR)` + 
+                               `Triples by batters (3B)` + 
+                               `Hits allowed`)
+
+summary(lmfit3)
+```
+
+The F-statistic is 157.5 and based on our p-values this model is significant. The Adjusted R-squared is 0.1711. However, the Triples by batters (3B) is less significant due to the colinearity with Base Hits by batters (1B, 2B,3B, HR). 
+
+The below plot of our fitted values against our residuals indicate that there is Heteroskadistity and showing uneven variation. 
+
+```{r, echo=FALSE}
+plot( lmfit3$fitted.values, lmfit3$residuals)
+```
+
+##Selected Model 
+
+```{r, eval=TRUE, echo=FALSE, message=FALSE}
+eval_data <- read.csv("moneyball-evaluation-data.csv")
+
+colnames(eval_data) <- mapvalues(as.vector(colnames(eval_data)), 
+                            from = str_trim(data_dictionary$VARIABLE.NAME..), 
+                            to = as.vector(str_trim(data_dictionary$DEFINITION)))
+eval_data <- eval_data %>%
+             mutate(`Sqrt of Strikeouts by batters` =  sqrt(`Strikeouts by batters`))
+```
+
+Our residuals in each model indcated Heteroskadistity and showed uneven variation. Therefore, we chose the model with the highest Adjusted R-squared which was Model 1. The Adjusted R-squared of each model is provided in the below table. 
+
+```{r, eval = TRUE, echo=FALSE, results = 'asis'}
+options(xtable.comment = FALSE)
+
+model1 <- c(1, 0.209, 201.646, 'Significant', 'Not good', 'shows curve', 'yes')
+model2 <- c(2, 0.156, 141.228, 'Significant', 'Not good', 'shows curve', 'yes')
+model3 <- c(3, 0.171, 157.533, 'Significant', 'Not good', 'shows curve', 'yes')
+models <- t(rbind(model1, model2) %>% rbind(model3)) %>% data.frame()
+rownames(models) <- c("Model", "Adjusted R Squared", "F-statistic", "P Value for F-Statistic", "Residual vs Fitted Constant Variation" , "Residual vs Fitted Curve","Residual vs Fitted Curve Heteroscedasticity")
+colnames(models) <- NULL
+
+models
+
+```
+
+```{r, echo=FALSE}
+options(scipen=999)
+fmodel <- c(lmfit1$coefficients[[1]], 
+            lmfit1$coefficients[[2]], 
+            lmfit1$coefficients[[3]], 
+            lmfit1$coefficients[[4]])
+```
+
+Therefore, our final model with the greatest Adjusted R-squared is: 
+
+$$
+\begin{aligned}
+  \sqrt{\textnormal{Number~of~wins}}~=~&\textnormal{`r round(fmodel[2],6)` * Base Hits by batters (1B,2B,3B,HR)} \\ 
+                                       &\textnormal{+ `r round(fmodel[3],6)` * Walks by batters} \\
+                                       &\textnormal{+ `r round(fmodel[4],8)` * Strikeouts by batters} \\
+                                       &\textnormal{+ `r round(fmodel[1],6)`}
+\end{aligned}
+$$
+
+Additionally, we are 95% confident that our regression values lie between the two values from the output in the below table.
+
+```{r, echo=FALSE, results='asis'}
+options(scipen=0)
+kable(confint(lmfit1,conf.level=0.95))
+```
+
+# Prediction on Evaluation Data
+
+Using our best performing model we used the predict R function and excluded evaluation data with missing values. The below table is our prediction results for the evaluation data set. 
+
+```{r, eval = TRUE, echo = FALSE, results = 'asis'}
+for (i in 2:length(eval_data)){  
+  eval_data[i] <- sapply(eval_data[i], function(x) as.numeric(x))
+} 
+
+eval_data <- as.data.frame(do.call(cbind, eval_data))
+eval_data$predictions <- predict(lmfit1, eval_data)
+
+eval_data <- eval_data %>%
+             mutate(predictions = as.integer(predictions^2))
+
+eval_results <- eval_data %>%
+                filter(!is.na(predictions)) %>%
+                select(`Identification Variable (do not use)`, predictions)
+
+kable(eval_results)
+```
